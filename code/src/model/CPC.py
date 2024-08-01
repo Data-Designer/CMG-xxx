@@ -46,7 +46,7 @@ class Cross_CPC(nn.Module):
         nce = 0 # average over timestep and batch
         video_encode_samples = torch.empty((self.n_prediction_steps,batch_dim,self.embedding_dim), device = video_vq.device).double() # e.g. size 5*80*256
         audio_encode_samples = torch.empty((self.n_prediction_steps,batch_dim,self.embedding_dim), device = audio_vq.device).double() # e.g. size 5*80*256
-        for i in range(1, self.n_prediction_steps+1):# closedOpen
+        for i in range(1, self.n_prediction_steps+1):# closedOpen, 存的ground-truth
             video_encode_samples[i-1] = video_vq[:,t_samples+i,:].reshape(batch_dim,self.embedding_dim) # z_tk e.g. size 80*256
             audio_encode_samples[i-1] = audio_vq[:,t_samples+i,:].reshape(batch_dim,self.embedding_dim) # z_tk e.g. size 80*256
         video_forward_seq = video_vq[:,:t_samples+1,:] # e.g. size 80*t_samples*256
@@ -54,25 +54,25 @@ class Cross_CPC(nn.Module):
         # Autoregressive LSTM for video
         video_hidden = (torch.zeros(self.num_layers, batch_dim, self.hidden_dim, device = video_vq.device).float(),
                   torch.zeros(self.num_layers, batch_dim, self.hidden_dim, device = video_vq.device).float())
-        video_context, video_hidden = self.video_ar_lstm(video_forward_seq, video_hidden)
+        video_context, video_hidden = self.video_ar_lstm(video_forward_seq, video_hidden) # 存的部分序列，forward等长 B，pT, D
         
         # Autoregressive LSTM for audio
         audio_hidden = (torch.zeros(self.num_layers, batch_dim, self.hidden_dim, device = audio_vq.device).float(),
                   torch.zeros(self.num_layers, batch_dim, self.hidden_dim, device = audio_vq.device).float())
         audio_context, audio_hidden = self.audio_ar_lstm(audio_forward_seq, audio_hidden)
         
-        video_context = video_context[:,t_samples,:].reshape(batch_dim,self.context_dim) # c_t e.g. size 80*512
-        audio_context = audio_context[:,t_samples,:].reshape(batch_dim,self.context_dim) # c_t e.g. size 80*512
+        video_context = video_context[:,t_samples,:].reshape(batch_dim,self.context_dim) # c_t e.g. size 80*512 # B, D
+        audio_context = audio_context[:,t_samples,:].reshape(batch_dim,self.context_dim) # c_t e.g. size 80*512 # B, D
         
         video_pred = torch.empty((self.n_prediction_steps,batch_dim,self.embedding_dim), device = video_vq.device).double() # e.g. size 5*80*256
         audio_pred = torch.empty((self.n_prediction_steps,batch_dim,self.embedding_dim), device = audio_vq.device).double() # e.g. size 5*80*256
         for i in range(0, self.n_prediction_steps):
-            video_linear = self.video_predictors[i]
-            video_pred[i] = video_linear(video_context) #e.g. size 80*512 -> 80*256
+            video_linear = self.video_predictors[i] # linear layer，每个time有个专门的linear
+            video_pred[i] = video_linear(video_context) # e.g. size 80*512 -> 80*256
             audio_linear = self.audio_predictors[i]
             audio_pred[i] = audio_linear(audio_context) #e.g. size 80*512 -> 80*256
         for i in range(0, self.n_prediction_steps):
-            total1 = torch.mm(video_encode_samples[i], torch.transpose(audio_pred[i],0,1)) # e.g. size 80*80
+            total1 = torch.mm(video_encode_samples[i], torch.transpose(audio_pred[i],0,1)) # e.g. size 80*80 # B,D; D,B
             total2 = torch.mm(audio_encode_samples[i], torch.transpose(video_pred[i],0,1)) # e.g. size 80*80
             total3 = torch.mm(video_encode_samples[i], torch.transpose(video_pred[i],0,1)) # e.g. size 80*80
             total4 = torch.mm(audio_encode_samples[i], torch.transpose(audio_pred[i],0,1)) # e.g. size 80*80
@@ -90,7 +90,7 @@ class Cross_CPC(nn.Module):
             nce += w3 * torch.sum(torch.diag(self.lsoftmax(total3))) # nce is a tensor
             nce += w4 * torch.sum(torch.diag(self.lsoftmax(total4))) # nce is a tensor
             
-        nce /= -1.*batch_dim*self.n_prediction_steps
+            nce /= -1.*batch_dim*self.n_prediction_steps
         accuracy1 = 1.*correct1/batch_dim
         accuracy2 = 1.*correct2/batch_dim
         accuracy3 = 1.*correct3/batch_dim
